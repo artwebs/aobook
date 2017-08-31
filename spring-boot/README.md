@@ -44,6 +44,8 @@ export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_131.jdk/Contents/Hom
 
 ### 参考网址
 [Spring Boot MVC Example](http://www.technicalkeeda.com/spring-tutorials/spring-boot-mvc-example)    
-[使用Gradle创建一个最简单的Spring Boot项目](http://blog.csdn.net/u013360850/article/details/53415005)    
+[使用Gradle创建一个最简单的Spring Boot项目](http://blog.csdn.net/u013360850/article/details/53415005)
+[eclipse下SpringBoot开发和测试](http://somefuture.iteye.com/blog/2247207)
+[Spring Boot集成Groovy混合Java开发](http://www.bijishequ.com/detail/369614?p=)
 [Spring Initializr](http://start.spring.io/)   
 [Spring Boot Reference Guide](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#getting-started-installing-the-cli)   
