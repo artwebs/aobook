@@ -42,6 +42,11 @@ export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_131.jdk/Contents/Hom
 
 ```
 
+### 解决com.example.demo.DemoApplicationTests > initializationError FAILED java.lang.IllegalStateException 问题
+```
+注释掉 src/test/com/example/demo/DemoApplicationTests 中的代码   
+```
+
 ### 参考网址
 [Spring Boot MVC Example](http://www.technicalkeeda.com/spring-tutorials/spring-boot-mvc-example)    
 [使用Gradle创建一个最简单的Spring Boot项目](http://blog.csdn.net/u013360850/article/details/53415005)
