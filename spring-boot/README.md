@@ -10,6 +10,24 @@ gradle bootrun #运行
 sudo port install gradle   
 ```
 
+### Spring boot CLI
+```
+sudo port install spring-boot-cli    
+mkdir demo   
+cd demo   
+spring init -d=web -g=com.example -a=demo --package-name=com.example --name=demo -x
+```
+```
+-d（dependencies 依赖包）   
+-g（Group Id）   
+-a（Artifact Id）   
+–package-name（Package name）   
+–name（Project name）   
+-x（Extract compatible archives）   
+
+```
+
+
 ### Quick start Spring CLI example
 ```
 @RestController
@@ -31,6 +49,7 @@ spring run app.groovy
 打开 Help > Eclipse Marketplace   
 buildship > Buildship Gradle Integration   
 gradle > Gradle IDE Pack 3.8.x+1.x
+sts > Spring tools
 
 ```
 
@@ -54,3 +73,5 @@ export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_131.jdk/Contents/Hom
 [Spring Boot集成Groovy混合Java开发](http://www.bijishequ.com/detail/369614?p=)
 [Spring Initializr](http://start.spring.io/)   
 [Spring Boot Reference Guide](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#getting-started-installing-the-cli)   
+[重拾后端之Spring Boot](http://www.jianshu.com/p/4e25e25b62c2)
+[spring-boot 入门](http://blog.csdn.net/qq_31655965/article/details/71258333)
