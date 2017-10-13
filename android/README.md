@@ -2,8 +2,8 @@
 
 
 ### 解决安装后出现多个图标问题
-```
 注释掉以下library模块的AndroidManifest.xml以下内容
+
 ```
 <!--<intent-filter>-->
                <!--<action android:name="android.intent.action.MAIN"/>-->
