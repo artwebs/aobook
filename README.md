@@ -7,3 +7,7 @@
   - [react](node/react/README.md)
   - [vue](/node/vue/README.md)
   - [yarn](/node/yarn/README.md)
+* [linux](linux/README.md)
+  - [centos](/linux/centos.md)
+  - [debian](/linux/debian.md)
+* [临时文件](temp.md)
