@@ -1,5 +1,9 @@
 ### org.apache.httpcomponents 引用问题
-
+Warning:WARNING: Dependency org.apache.httpcomponents:httpclient:4.5.2 is ignored for debug as it may be conflicting with the internal version provided by Android.
+注释掉
+```
+compile 'org.apache.httpcomponents:httpclient:4.5.2'
+```  
 
 ### 解决安装后出现多个图标问题
 注释掉以下library模块的AndroidManifest.xml以下内容
