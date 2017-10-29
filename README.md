@@ -10,4 +10,7 @@
 * [linux](linux/README.md)
   - [centos](/linux/centos.md)
   - [debian](/linux/debian.md)
+* [database](database/README.md)
+  - [mysql](database/mysql.md)
+  - [oracle](database/oralce.md)
 * [临时文件](temp.md)
