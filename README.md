@@ -10,7 +10,7 @@
 * [linux](linux/README.md)
   - [centos](linux/centos.md)
   - [debian](linux/debian.md)
-  - [KaliLinx](linux/KaliLinx.md)
+  - [KaliLinx](/linux/KaliLinx.md)
 * [database](database/README.md)
   - [mysql](database/mysql.md)
   - [oracle](database/oralce.md)
