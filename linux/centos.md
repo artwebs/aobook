@@ -52,3 +52,8 @@ useradd -d /var/ftp/public_root -g ftp -s /sbin/nologin ftpuser
 
 passwd ftpuser
 ```
+### 错误: 无法建立数据连接: ECONNREFUSED - 连接被服务器拒绝
+```
+解决方式：
+更换使用FTP软件连接方式，把被动改为主动，把传输模式改为主动 
+```
