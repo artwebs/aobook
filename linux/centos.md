@@ -62,3 +62,5 @@ passwd ftpuser
 ```
 semanage port -a -t ssh_port_t -p tcp 9481
 ```
+
+[安装包搜索](http://rpm.pbone.net/)
