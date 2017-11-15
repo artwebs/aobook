@@ -55,5 +55,10 @@ passwd ftpuser
 ### 错误: 无法建立数据连接: ECONNREFUSED - 连接被服务器拒绝
 ```
 解决方式：
-更换使用FTP软件连接方式，把被动改为主动，把传输模式改为主动 
+更换使用FTP软件连接方式，把被动改为主动，把传输模式改为主动
+```
+
+### Bind to port 2211 on 0.0.0.0 failed: Permission denied.
+```
+semanage port -a -t ssh_port_t -p tcp 9481
 ```
