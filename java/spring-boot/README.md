@@ -75,3 +75,25 @@ export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk1.8.0_131.jdk/Contents/Hom
 [Spring Boot Reference Guide](https://docs.spring.io/spring-boot/docs/current/reference/htmlsingle/#getting-started-installing-the-cli)   
 [重拾后端之Spring Boot](http://www.jianshu.com/p/4e25e25b62c2)
 [spring-boot 入门](http://blog.csdn.net/qq_31655965/article/details/71258333)
+
+### 事物回滚
+```
+@Autowired
+private TransactionTemplate transactionTemplate;
+
+方法体中插入
+int rs=transactionTemplate.execute(new TransactionCallback<Integer>() {
+
+				@Override
+				public Integer doInTransaction(TransactionStatus status) {
+					new ResultObject(
+							db.table("base", "student_").insert(map)>0
+							,"录入成功"
+							,"录入失败"
+							).toJson();
+					status.setRollbackOnly();
+					return 2;
+				}
+			});
+
+```
