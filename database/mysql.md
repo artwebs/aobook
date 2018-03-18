@@ -4,6 +4,27 @@ GRANT ALL PRIVILEGES ON *.* TO 'user'@'192.168.42.%' IDENTIFIED BY 'xxxxx' WITH 
 flush privileges;
 ```
 
+### 主从数据库配置
+```
+1、完成配置远程访问
+2、主库
+2.1 在/etc/my.cnf文件中，加上
+    server-id=1 #数据库的唯一ID号，默认以1开始
+    log-bin=mysql-bin #启用二进制日志
+2.2 重启数据库库 service mysql restart
+2.3 show master status; 
+  请记下File与Position的数据
+3 从库
+3.1 在/etc/my.cnf文件中，加上
+    server-id=2 #数据库的唯一ID号，默认以1开始
+    log-bin=mysql-bin #启用二进制日志
+
+3.2 重启数据库库 service mysql restart
+3.3 配置从库 change master to master_host='192.168.137.101',master_user='root',master_password='12345678',master_log_file='mysql-bin.000001',master_log_pos=245;
+start slave;
+show slave status\G; 
+```
+
 ### 动态列（Dynamic Columns）
 ```
 1、表结构

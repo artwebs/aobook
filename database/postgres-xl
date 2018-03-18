@@ -1,0 +1,1379 @@
+Postgres-XL 9.5简易搭建
+简介
+Postgres-XL 一款开源的PG集群软件，XL代表eXtensible Lattice，即可扩展的PG“格子”之意。它是一个完全满足ACID的、开源的、可方便进行水平扩展的、多租户安全的、基于PostgreSQL的数据库解决方案。 
+与Pgpool不同的是，Postgres-XL是在PG源代码的基础上增加新功能实现的。它将PG的SQL解析层的工作和数据存取层的工作分离到不同的两种节点上，分别称为Coordinator节点和Datanode节点，而且每种节点可以配置多个，共同协调完成原本单个PG实例完成的工作。此外，为了保证分布模式下事务能够正确执行，增加了一个GTM节点。为了避免单点故障，可以为所有节点配置对应的slave节点。
+
+功能
+特色:
+
+完全支持数据库ACID特性（原子性（Atomicity）、一致性（Consistency）、隔离性（Isolation）、持久性（Durability））
+开源
+集群范围的一致性
+多租户的安全性
+基于PostgreSQL
+工作负载:
+
+MPP架构的OLAP数据库
+在线交易处理
+混合环境
+操作数据存储
+包括JSON类型的键值
+应用场景
+Postgres-XL是一个水平可扩展的开源SQL数据库集群，足够灵活，可以处理不同的数据库工作负载：
+
+OLTP密集型写入工作负载
+MPP架构的并行商业智能系统
+操作数据存储
+键值存储
+GIS地理空间
+混合工作负载环境
+多租户提供商托管环境
+集群图
+
+可拓展性
+Postgres-XL (可扩展的PG“格子”) 允许你将表分区，存储在多个节点，也可以单纯的复制他们（每个节点存一个复制）。
+
+分区(或分发)表允许跨多个节点的写入可扩展性以及大数据类型工作负载的大规模并行处理（MPP）。
+
+复制表通常是不经常变化的静态数据。 复制它们允许读取可扩展性。
+
+完全ACID
+Postgres-XL是一个完全符合ACID标准的事务数据库，不仅可以随时为您提供完全一致的数据视图，还可以使用集群范围的多版本并发控制（MVCC）。 当您在Postgres-XL中启动事务或查询时，您将在整个集群中看到一致的数据版本。 当您在一个连接上读取数据时，您可以在另一个连接中更新同一个表，甚至更新行，而无需锁定。 由于全局事务标识符和快照，两个连接都使用自己的行版本。读取和写入不会相互阻碍。
+
+组件
+Global Transaction Monitor (GTM)
+全局事务控制节点，保证集群数据的一致性，与Coordinator节点和Datanode节点不断通信，是整个集群的核心节点，只存在一个，可以存在一个GTM Standby节点，对GTM实时备份。GTM一旦故障，整个集群立刻无法访问，此时可以切换到GTM Standby节点上。如果部署了GTM Standby节点，就应该同时部署GTM Proxy，一般和Coordinator、Datanode部署在同一台服务器上。GTM Proxy的作用代理Coordinator和Datanode对GTM的访问，起到减轻GTM负载的作用，另外一个重要的作用是帮助完成GTM的故障切换，当GTM节点发生故障后，GTM Standby成为新的GTM，此时Coordinator和Datanode节点并不需要重新指定GTM地址，只需要GTM Proxy重新连接到新的GTM地址即可。
+
+Coordinator
+接收数据访问请求的节点，本质上是由PG后台进程组成。接收的一条查询后，Coordinator节点执行查询计划，然后会根据查询数据涉及的数据节点将查询分发给相关的数据节点。写入数据时，也会根据不同的数据分布策略将数据写入相关的节点。可以说Coordinator节点上保存着集群的全局数据位置。Coordinator节点可以任意扩展，各个节点之间除了访问地址不同以外是完全对等的，通过一个节点更新的数据可以在另一个节点上立刻看到。每个Coordinator节点可以配置一个对应的standby节点，避免单点故障。
+
+Data Node
+实际存取数据的节点，接收Coordinator的请求并执行SQL语句存取数据，节点之间也会互相通信。一般的，一个节点上的数据并不是全局的，数据节点不直接对外提供数据访问。一个表的数据在数据节点上的分布存在两种模式：复制模式和分片模式，复制模式下，一个表的数据在指定的节点上存在多个副本；分片模式下，一个表的数据按照一定的规则分布在多个数据节点上，这些节点共同保存一份完整的数据。
+
+环境
+实验环境总共准备了3台机器
+
+pgxl_gtm:
+IP:192.168.230.143
+角色	端口	nodename	数据目录
+GTM	6666	gtm	/nodes/gtm
+GTM Slave	20001	gtmSlave	/nodes/gtmSlave
+pgxl_node1:
+IP:192.168.230.144
+角色	端口	nodename	数据目录
+Coordinator	5432	coord1	/nodes/coord
+Datanode	5433	node1	/nodes/dn_master
+Datanode slave	15433	node1_slave	/nodes/dn_slave
+GTM Proxy	6666	gtm_pxy1	/nodes/gtm_pxy
+pgxl_node2:
+IP:192.168.230.145
+角色	端口	nodename	数据目录
+Coordinator	5432	coord2	/nodes/coord
+Datanode	5433	node2	/nodes/dn_master
+Datanode slave	15433	node2_slave	/nodes/dn_slave
+GTM Proxy	6666	gtm_pxy2	/nodes/gtm_pxy
+系统环境配置
+在3个节点都要执行
+
+关闭防火墙
+防火墙会影响各个服务器的相互访问
+
+[root@localhost ~]# systemctl stop firewalld.service
+[root@localhost ~]# systemctl disable firewalld.service
+关闭SELinux
+SELinux开启的亲况下无法配置免密码ssh登陆各个子节点的权限
+
+[root@localhost ~]# vim /etc/selinux/config 
+
+# This file controls the state of SELinux on the system.
+# SELINUX= can take one of these three values:
+#     enforcing - SELinux security policy is enforced.
+#     permissive - SELinux prints warnings instead of enforcing.
+#     disabled - No SELinux policy is loaded.
+SELINUX=disabled
+# SELINUXTYPE= can take one of three two values:
+#     targeted - Targeted processes are protected,
+#     minimum - Modification of targeted policy. Only selected processes are protected. 
+#     mls - Multi Level Security protection.
+SELINUXTYPE=targeted
+配置hosts
+在主机名查询表中添加三个服务器的ip–主机名映射
+
+[root@localhost ~]# vim /etc/hosts
+
+
+127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+
+192.168.230.143 gtm
+192.168.230.144 datanode1
+192.168.230.145 datanode2
+安装git
+我是使用git去下载的安装文件，如通过其他方式下载可不安装
+
+[root@localhost ~]# yum install git -y
+Loaded plugins: fastestmirror, langpacks
+Loading mirror speeds from cached hostfile
+ * base: mirrors.aliyun.com
+ * extras: mirrors.aliyun.com
+ * updates: mirrors.aliyun.com
+Resolving Dependencies
+--> Running transaction check
+---> Package git.x86_64 0:1.8.3.1-12.el7_4 will be installed
+--> Processing Dependency: perl-Git = 1.8.3.1-12.el7_4 for package: git-1.8.3.1-12.el7_4.x86_64
+--> Processing Dependency: perl(Term::ReadKey) for package: git-1.8.3.1-12.el7_4.x86_64
+--> Processing Dependency: perl(Git) for package: git-1.8.3.1-12.el7_4.x86_64
+--> Processing Dependency: perl(Error) for package: git-1.8.3.1-12.el7_4.x86_64
+--> Running transaction check
+---> Package perl-Error.noarch 1:0.17020-2.el7 will be installed
+---> Package perl-Git.noarch 0:1.8.3.1-12.el7_4 will be installed
+---> Package perl-TermReadKey.x86_64 0:2.30-20.el7 will be installed
+--> Finished Dependency Resolution
+
+Dependencies Resolved
+
+===================================================================================================================================
+ Package                            Arch                     Version                               Repository                 Size
+===================================================================================================================================
+Installing:
+ git                                x86_64                   1.8.3.1-12.el7_4                      updates                   4.4 M
+Installing for dependencies:
+ perl-Error                         noarch                   1:0.17020-2.el7                       base                       32 k
+ perl-Git                           noarch                   1.8.3.1-12.el7_4                      updates                    53 k
+ perl-TermReadKey                   x86_64                   2.30-20.el7                           base                       31 k
+
+Transaction Summary
+===================================================================================================================================
+Install  1 Package (+3 Dependent packages)
+
+Total download size: 4.5 M
+Installed size: 22 M
+Downloading packages:
+(1/4): perl-Error-0.17020-2.el7.noarch.rpm                                                                  |  32 kB  00:00:00     
+(2/4): perl-Git-1.8.3.1-12.el7_4.noarch.rpm                                                                 |  53 kB  00:00:00     
+(3/4): perl-TermReadKey-2.30-20.el7.x86_64.rpm                                                              |  31 kB  00:00:00     
+(4/4): git-1.8.3.1-12.el7_4.x86_64.rpm                                                                      | 4.4 MB  00:00:00     
+-----------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                              5.7 MB/s | 4.5 MB  00:00:00     
+Running transaction check
+Running transaction test
+Transaction test succeeded
+Running transaction
+  Installing : 1:perl-Error-0.17020-2.el7.noarch                                                                               1/4 
+  Installing : perl-TermReadKey-2.30-20.el7.x86_64                                                                             2/4 
+  Installing : perl-Git-1.8.3.1-12.el7_4.noarch                                                                                3/4 
+  Installing : git-1.8.3.1-12.el7_4.x86_64                                                                                     4/4 
+  Verifying  : git-1.8.3.1-12.el7_4.x86_64                                                                                     1/4 
+  Verifying  : 1:perl-Error-0.17020-2.el7.noarch                                                                               2/4 
+  Verifying  : perl-Git-1.8.3.1-12.el7_4.noarch                                                                                3/4 
+  Verifying  : perl-TermReadKey-2.30-20.el7.x86_64                                                                             4/4 
+
+Installed:
+  git.x86_64 0:1.8.3.1-12.el7_4                                                                                                    
+
+Dependency Installed:
+  perl-Error.noarch 1:0.17020-2.el7        perl-Git.noarch 0:1.8.3.1-12.el7_4        perl-TermReadKey.x86_64 0:2.30-20.el7       
+
+Complete!
+安装依赖包
+[root@localhost ~]# yum install -y flex bison readline-devel zlib-devel openjade docbook-style-dsssl
+Loaded plugins: fastestmirror, langpacks
+Loading mirror speeds from cached hostfile
+ * base: mirrors.aliyun.com
+ * extras: mirrors.aliyun.com
+ * updates: mirrors.aliyun.com
+Resolving Dependencies
+--> Running transaction check
+---> Package bison.x86_64 0:3.0.4-1.el7 will be installed
+--> Processing Dependency: m4 >= 1.4 for package: bison-3.0.4-1.el7.x86_64
+---> Package docbook-style-dsssl.noarch 0:1.79-18.el7 will be installed
+--> Processing Dependency: sgml-common for package: docbook-style-dsssl-1.79-18.el7.noarch
+--> Processing Dependency: sgml-common for package: docbook-style-dsssl-1.79-18.el7.noarch
+--> Processing Dependency: docbook-dtds for package: docbook-style-dsssl-1.79-18.el7.noarch
+---> Package flex.x86_64 0:2.5.37-3.el7 will be installed
+---> Package openjade.x86_64 0:1.3.2-45.el7 will be installed
+--> Processing Dependency: libosp.so.5()(64bit) for package: openjade-1.3.2-45.el7.x86_64
+---> Package readline-devel.x86_64 0:6.2-10.el7 will be installed
+--> Processing Dependency: readline = 6.2-10.el7 for package: readline-devel-6.2-10.el7.x86_64
+--> Processing Dependency: ncurses-devel for package: readline-devel-6.2-10.el7.x86_64
+---> Package zlib-devel.x86_64 0:1.2.7-17.el7 will be installed
+--> Running transaction check
+---> Package docbook-dtds.noarch 0:1.0-60.el7 will be installed
+---> Package m4.x86_64 0:1.4.16-10.el7 will be installed
+---> Package ncurses-devel.x86_64 0:5.9-14.20130511.el7_4 will be installed
+--> Processing Dependency: ncurses-libs(x86-64) = 5.9-14.20130511.el7_4 for package: ncurses-devel-5.9-14.20130511.el7_4.x86_64
+---> Package opensp.x86_64 0:1.5.2-19.el7 will be installed
+---> Package readline.x86_64 0:6.2-9.el7 will be updated
+---> Package readline.x86_64 0:6.2-10.el7 will be an update
+---> Package sgml-common.noarch 0:0.6.3-39.el7 will be installed
+--> Running transaction check
+---> Package ncurses-libs.x86_64 0:5.9-13.20130511.el7 will be updated
+--> Processing Dependency: ncurses-libs(x86-64) = 5.9-13.20130511.el7 for package: ncurses-5.9-13.20130511.el7.x86_64
+---> Package ncurses-libs.x86_64 0:5.9-14.20130511.el7_4 will be an update
+--> Processing Dependency: ncurses-base = 5.9-14.20130511.el7_4 for package: ncurses-libs-5.9-14.20130511.el7_4.x86_64
+--> Running transaction check
+---> Package ncurses.x86_64 0:5.9-13.20130511.el7 will be updated
+---> Package ncurses.x86_64 0:5.9-14.20130511.el7_4 will be an update
+---> Package ncurses-base.noarch 0:5.9-13.20130511.el7 will be updated
+---> Package ncurses-base.noarch 0:5.9-14.20130511.el7_4 will be an update
+--> Finished Dependency Resolution
+
+Dependencies Resolved
+
+===================================================================================================================================
+ Package                             Arch                   Version                                  Repository               Size
+===================================================================================================================================
+Installing:
+ bison                               x86_64                 3.0.4-1.el7                              base                    674 k
+ docbook-style-dsssl                 noarch                 1.79-18.el7                              base                    251 k
+ flex                                x86_64                 2.5.37-3.el7                             base                    292 k
+ openjade                            x86_64                 1.3.2-45.el7                             base                    831 k
+ readline-devel                      x86_64                 6.2-10.el7                               base                    138 k
+ zlib-devel                          x86_64                 1.2.7-17.el7                             base                     50 k
+Installing for dependencies:
+ docbook-dtds                        noarch                 1.0-60.el7                               base                    226 k
+ m4                                  x86_64                 1.4.16-10.el7                            base                    256 k
+ ncurses-devel                       x86_64                 5.9-14.20130511.el7_4                    updates                 712 k
+ opensp                              x86_64                 1.5.2-19.el7                             base                    874 k
+ sgml-common                         noarch                 0.6.3-39.el7                             base                     55 k
+Updating for dependencies:
+ ncurses                             x86_64                 5.9-14.20130511.el7_4                    updates                 304 k
+ ncurses-base                        noarch                 5.9-14.20130511.el7_4                    updates                  68 k
+ ncurses-libs                        x86_64                 5.9-14.20130511.el7_4                    updates                 316 k
+ readline                            x86_64                 6.2-10.el7                               base                    193 k
+
+Transaction Summary
+===================================================================================================================================
+Install  6 Packages (+5 Dependent packages)
+Upgrade             ( 4 Dependent packages)
+
+Total size: 5.1 M
+Total download size: 4.5 M
+Downloading packages:
+No Presto metadata available for base
+Delta RPMs reduced 68 k of updates to 43 k (36% saved)
+(1/13): ncurses-base-5.9-13.20130511.el7_5.9-14.20130511.el7_4.noarch.drpm                                  |  43 kB  00:00:00     
+warning: /var/cache/yum/x86_64/7/base/packages/m4-1.4.16-10.el7.x86_64.rpm: Header V3 RSA/SHA256 Signature, key ID f4a80eb5: NOKEY
+Public key for m4-1.4.16-10.el7.x86_64.rpm is not installed
+(2/13): m4-1.4.16-10.el7.x86_64.rpm                                                                         | 256 kB  00:00:00     
+Public key for ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm is not installed
+(3/13): ncurses-devel-5.9-14.20130511.el7_4.x86_64.rpm                                                      | 712 kB  00:00:00     
+(4/13): docbook-style-dsssl-1.79-18.el7.noarch.rpm                                                          | 251 kB  00:00:00     
+(5/13): openjade-1.3.2-45.el7.x86_64.rpm                                                                    | 831 kB  00:00:00     
+(6/13): bison-3.0.4-1.el7.x86_64.rpm                                                                        | 674 kB  00:00:00     
+(7/13): opensp-1.5.2-19.el7.x86_64.rpm                                                                      | 874 kB  00:00:00     
+(8/13): readline-devel-6.2-10.el7.x86_64.rpm                                                                | 138 kB  00:00:00     
+(9/13): flex-2.5.37-3.el7.x86_64.rpm                                                                        | 292 kB  00:00:00     
+(10/13): sgml-common-0.6.3-39.el7.noarch.rpm                                                                |  55 kB  00:00:00     
+(11/13): zlib-devel-1.2.7-17.el7.x86_64.rpm                                                                 |  50 kB  00:00:00     
+(12/13): docbook-dtds-1.0-60.el7.noarch.rpm                                                                 | 226 kB  00:00:01     
+(13/13): readline-6.2-10.el7.x86_64.rpm                                                                     | 193 kB  00:00:03     
+-----------------------------------------------------------------------------------------------------------------------------------
+Total                                                                                              1.1 MB/s | 4.5 MB  00:00:04     
+Retrieving key from file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+Importing GPG key 0xF4A80EB5:
+ Userid     : "CentOS-7 Key (CentOS 7 Official Signing Key) <security@centos.org>"
+ Fingerprint: 6341 ab27 53d7 8a78 a7c2 7bb1 24c6 a8a7 f4a8 0eb5
+ Package    : centos-release-7-3.1611.el7.centos.x86_64 (@anaconda)
+ From       : /etc/pki/rpm-gpg/RPM-GPG-KEY-CentOS-7
+Running transaction check
+Running transaction test
+Transaction test succeeded
+Running transaction
+  Installing : sgml-common-0.6.3-39.el7.noarch                                                                                1/19 
+  Installing : m4-1.4.16-10.el7.x86_64                                                                                        2/19 
+  Installing : opensp-1.5.2-19.el7.x86_64                                                                                     3/19 
+  Installing : openjade-1.3.2-45.el7.x86_64                                                                                   4/19 
+  Installing : docbook-dtds-1.0-60.el7.noarch                                                                                 5/19 
+  Updating   : ncurses-base-5.9-14.20130511.el7_4.noarch                                                                      6/19 
+  Updating   : ncurses-libs-5.9-14.20130511.el7_4.x86_64                                                                      7/19 
+  Installing : ncurses-devel-5.9-14.20130511.el7_4.x86_64                                                                     8/19 
+  Updating   : readline-6.2-10.el7.x86_64                                                                                     9/19 
+  Installing : readline-devel-6.2-10.el7.x86_64                                                                              10/19 
+  Updating   : ncurses-5.9-14.20130511.el7_4.x86_64                                                                          11/19 
+  Installing : docbook-style-dsssl-1.79-18.el7.noarch                                                                        12/19 
+  Installing : bison-3.0.4-1.el7.x86_64                                                                                      13/19 
+  Installing : flex-2.5.37-3.el7.x86_64                                                                                      14/19 
+  Installing : zlib-devel-1.2.7-17.el7.x86_64                                                                                15/19 
+  Cleanup    : readline-6.2-9.el7.x86_64                                                                                     16/19 
+  Cleanup    : ncurses-5.9-13.20130511.el7.x86_64                                                                            17/19 
+  Cleanup    : ncurses-libs-5.9-13.20130511.el7.x86_64                                                                       18/19 
+  Cleanup    : ncurses-base-5.9-13.20130511.el7.noarch                                                                       19/19 
+  Verifying  : opensp-1.5.2-19.el7.x86_64                                                                                     1/19 
+  Verifying  : zlib-devel-1.2.7-17.el7.x86_64                                                                                 2/19 
+  Verifying  : ncurses-base-5.9-14.20130511.el7_4.noarch                                                                      3/19 
+  Verifying  : docbook-style-dsssl-1.79-18.el7.noarch                                                                         4/19 
+  Verifying  : openjade-1.3.2-45.el7.x86_64                                                                                   5/19 
+  Verifying  : docbook-dtds-1.0-60.el7.noarch                                                                                 6/19 
+  Verifying  : bison-3.0.4-1.el7.x86_64                                                                                       7/19 
+  Verifying  : ncurses-devel-5.9-14.20130511.el7_4.x86_64                                                                     8/19 
+  Verifying  : ncurses-libs-5.9-14.20130511.el7_4.x86_64                                                                      9/19 
+  Verifying  : flex-2.5.37-3.el7.x86_64                                                                                      10/19 
+  Verifying  : ncurses-5.9-14.20130511.el7_4.x86_64                                                                          11/19 
+  Verifying  : readline-devel-6.2-10.el7.x86_64                                                                              12/19 
+  Verifying  : m4-1.4.16-10.el7.x86_64                                                                                       13/19 
+  Verifying  : sgml-common-0.6.3-39.el7.noarch                                                                               14/19 
+  Verifying  : readline-6.2-10.el7.x86_64                                                                                    15/19 
+  Verifying  : ncurses-base-5.9-13.20130511.el7.noarch                                                                       16/19 
+  Verifying  : ncurses-5.9-13.20130511.el7.x86_64                                                                            17/19 
+  Verifying  : ncurses-libs-5.9-13.20130511.el7.x86_64                                                                       18/19 
+  Verifying  : readline-6.2-9.el7.x86_64                                                                                     19/19 
+
+Installed:
+  bison.x86_64 0:3.0.4-1.el7             docbook-style-dsssl.noarch 0:1.79-18.el7         flex.x86_64 0:2.5.37-3.el7              
+  openjade.x86_64 0:1.3.2-45.el7         readline-devel.x86_64 0:6.2-10.el7               zlib-devel.x86_64 0:1.2.7-17.el7        
+
+Dependency Installed:
+  docbook-dtds.noarch 0:1.0-60.el7       m4.x86_64 0:1.4.16-10.el7               ncurses-devel.x86_64 0:5.9-14.20130511.el7_4      
+  opensp.x86_64 0:1.5.2-19.el7           sgml-common.noarch 0:0.6.3-39.el7      
+
+Dependency Updated:
+  ncurses.x86_64 0:5.9-14.20130511.el7_4  ncurses-base.noarch 0:5.9-14.20130511.el7_4  ncurses-libs.x86_64 0:5.9-14.20130511.el7_4 
+  readline.x86_64 0:6.2-10.el7           
+
+Complete!
+重启服务器
+为了使系统配置修改生效，需要重启3台服务器
+
+[root@localhost ~]# shutdown -r
+Shutdown scheduled for Wed 2017-10-25 23:45:20 PDT, use 'shutdown -c' to cancel.
+[root@localhost ~]# 
+Broadcast message from root@localhost.localdomain (Wed 2017-10-25 23:44:20 PDT):
+
+The system is going down for reboot at Wed 2017-10-25 23:45:20 PDT!
+配置ssh免密访问
+在三台服务器都建用户postgres，用来管理及操作数据库集群
+
+[root@localhost ~]# useradd postgres
+[root@localhost ~]# passwd postgres
+Changing password for user postgres.
+New password: 
+BAD PASSWORD: The password is shorter than 8 characters
+Retype new password: 
+passwd: all authentication tokens updated successfully.
+切换到新建postgres用户，并在主目录创建.ssh文件夹
+
+[root@localhost ~]# su - postgres
+[postgres@localhost ~]$ mkdir ~/.ssh
+[postgres@localhost ~]$ chmod 700 ~/.ssh
+单独在gtm节点生成密钥
+
+[postgres@localhost ~]$ ssh-keygen -t rsa
+Generating public/private rsa key pair.
+Enter file in which to save the key (/home/postgres/.ssh/id_rsa): 
+Enter passphrase (empty for no passphrase): 
+Enter same passphrase again: 
+Your identification has been saved in /home/postgres/.ssh/id_rsa.
+Your public key has been saved in /home/postgres/.ssh/id_rsa.pub.
+The key fingerprint is:
+13:05:95:31:23:0b:3c:f3:7b:94:b1:93:76:eb:10:c7 postgres@localhost.localdomain
+The key's randomart image is:
++--[ RSA 2048]----+
+|     .. oo*o     |
+|      +. +oo     |
+|       +o  *     |
+|        ..O E    |
+|        S+ = .   |
+|        ..o .    |
+|         . o     |
+|            .    |
+|                 |
++-----------------+
+[postgres@localhost ~]$ cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+[postgres@localhost ~]$ chmod 600 ~/.ssh/authorized_keys
+如此便生成了gtm节点数据库的ssh访问密钥，下面将生成的密钥文件通过scp工具分别传给2个node节点
+
+[postgres@localhost ~]$ scp ~/.ssh/authorized_keys postgres@datanode1:~/.ssh/
+The authenticity of host 'node1 (192.168.230.144)' can't be established.
+ECDSA key fingerprint is d0:ab:13:fd:09:6b:45:55:0d:eb:67:c9:de:32:48:d2.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'node1,192.168.230.144' (ECDSA) to the list of known hosts.
+postgres@node1's password: 
+authorized_keys                                                                                  100%  412     0.4KB/s   00:00  
+
+[postgres@localhost ~]$ scp ~/.ssh/authorized_keys postgres@datanode2:~/.ssh/
+The authenticity of host 'node2 (192.168.230.145)' can't be established.
+ECDSA key fingerprint is a4:f2:96:92:9a:e1:4e:cb:f0:9d:f2:ea:93:ec:44:23.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'node2,192.168.230.145' (ECDSA) to the list of known hosts.
+postgres@node2's password: 
+authorized_keys                                                                                  100%  412     0.4KB/s   00:00
+检查ssh免密访问是否配置成功
+
+[root@gtm ~]# ssh datanode1
+The authenticity of host 'datanode2 (192.168.230.145)' can't be established.
+ECDSA key fingerprint is a4:f2:96:92:9a:e1:4e:cb:f0:9d:f2:ea:93:ec:44:23.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'datanode2,192.168.230.145' (ECDSA) to the list of known hosts.
+Last login: Thu Oct 26 19:35:23 2017 from 192.168.230.1
+[root@datanode2 ~]# exit
+logout
+Connection to datanode1 closed.
+
+[root@gtm ~]# ssh datanode2
+The authenticity of host 'datanode2 (192.168.230.145)' can't be established.
+ECDSA key fingerprint is a4:f2:96:92:9a:e1:4e:cb:f0:9d:f2:ea:93:ec:44:23.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'datanode2,192.168.230.145' (ECDSA) to the list of known hosts.
+Last login: Thu Oct 26 19:35:29 2017 from 192.168.230.1
+[root@datanode2 ~]# exit
+logout
+Connection to datanode2 closed.
+不需要输入密码，说明配置成功
+
+使用git安装Postgres-XL
+在三台服务器都要安装
+
+安装包下载
+[postgres@localhost opt]$ exit
+logout
+[root@localhost ~]# cd /opt
+
+[root@localhost opt]# git clone git://git.postgresql.org/git/postgres-xl.git
+Cloning into 'postgres-xl'...
+remote: Counting objects: 548821, done.
+remote: Compressing objects: 100% (96545/96545), done.
+remote: Total 548821 (delta 464512), reused 533660 (delta 450160)
+Receiving objects: 100% (548821/548821), 165.50 MiB | 253.00 KiB/s, done.
+Resolving deltas: 100% (464512/464512), done.
+安装前环境配置检测
+[root@localhost opt]# cd postgres-xl
+[root@localhost postgres-xl]# ./configure --prefix=/home/postgres/pgxl/
+checking build system type... x86_64-pc-linux-gnu
+checking host system type... x86_64-pc-linux-gnu
+checking which template to use... linux
+checking whether NLS is wanted... no
+checking for default port number... 5432
+checking for block size... 8kB
+···
+···
+···
+config.status: linking src/include/port/linux.h to src/include/pg_config_os.h
+config.status: linking src/makefiles/Makefile.linux to src/Makefile.port
+编译Postgres-XL
+[root@localhost postgres-xl]# make
+
+···
+···
+All of Postgres-XL successfully made. Ready to install.
+安装Postgres-XL
+[root@localhost postgres-xl]# make install
+
+···
+···
+Postgres-XL installation complete.
+安装Postgres-XL的contrib包
+这个是Postgres-XL的拓展包，提供了uuid，fdw等很有用的工具
+
+[root@localhost ~postgres-xl]# cd contrib/
+[root@localhost ~contrib]# make
+[root@localhost ~contrib]# make install
+Postgres-XL配置
+在三台服务器都要配置
+
+修改文件夹所有者
+将/home/postgres下所有文件的所有者变更为postgres用户
+
+[root@gtm ~]# chown -R postgres /home/postgres
+修改postgres用户环境变量
+编辑.bashrc文件
+
+[root@localhost contrib]# su - postgres
+Last login: Wed Oct 25 23:57:45 PDT 2017 on pts/0
+[postgres@localhost ~]$ vim .bashrc
+添加了3个静态路径地址
+
+# .bashrc
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+        . /etc/bashrc
+fi
+
+# Uncomment the following line if you don't like systemctl's auto-paging feature:
+# export SYSTEMD_PAGER=
+
+# User specific aliases and functions
+
+export PGHOME=/home/postgres/pgxl
+export LD_LIBRARY_PATH=$PGHOME/lib:$LD_LIBRARY_PATH
+export PATH=$PGHOME/bin:$PATH
+使配置修改生效
+
+[postgres@localhost ~]$ source .bashrc
+检查配置是否已修改
+
+[postgres@localhost ~]$ echo $PGHOME
+/home/postgres/pgxl
+配置pgxc_ctl.conf参数
+使用pgxc_ctl命令进入PGXC操作界面，此时会检测到缺少pgxc_ctl.conf文件 
+使用prepare命令去创建一个全新的pgxc_ctl.conf模板，路径为/home/postgres/pgxc_ctl/pgxc_ctl.conf 
+之后使用Crtl+c退出PGXC操作界面
+
+[postgres@localhost ~]$ pgxc_ctl
+/bin/bash
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+ERROR: File "/home/postgres/pgxc_ctl/pgxc_ctl.conf" not found or not a regular file. No such file or directory
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Reading configuration using /home/postgres/pgxc_ctl/pgxc_ctl_bash --home /home/postgres/pgxc_ctl --configuration /home/postgres/pgxc_ctl/pgxc_ctl.conf
+Finished reading configuration.
+   ******** PGXC_CTL START ***************
+
+Current directory: /home/postgres/pgxc_ctl
+PGXC prepare
+PGXC ^C
+编辑pgxc_ctl.conf文件
+
+[postgres@localhost ~]$ vim /home/postgres/pgxc_ctl/pgxc_ctl.conf
+配置修改后如下
+
+#!/usr/bin/env bash
+#
+# Postgres-XC Configuration file for pgxc_ctl utility. 
+#
+# Configuration file can be specified as -c option from pgxc_ctl command.   Default is
+# $PGXC_CTL_HOME/pgxc_ctl.org.
+#
+# This is bash script so you can make any addition for your convenience to configure
+# your Postgres-XC cluster.
+#
+# Please understand that pgxc_ctl provides only a subset of configuration which pgxc_ctl
+# provide.  Here's several several assumptions/restrictions pgxc_ctl depends on.
+#
+# 1) All the resources of pgxc nodes has to be owned by the same user.   Same user means
+#    user with the same user name.  User ID may be different from server to server.
+#    This must be specified as a variable $pgxcOwner.
+#
+# 2) All the servers must be reacheable via ssh without password.   It is highly recommended
+#    to setup key-based authentication among all the servers.
+#
+# 3) All the databases in coordinator/datanode has at least one same superuser.  Pgxc_ctl
+#    uses this user to connect to coordinators and datanodes.   Again, no password should
+#    be used to connect.  You have many options to do this, pg_hba.conf, pg_ident.conf and
+#    others.  Pgxc_ctl provides a way to configure pg_hba.conf but not pg_ident.conf.   This
+#    will be implemented in the later releases.
+#
+# 4) Gtm master and slave can have different port to listen, while coordinator and datanode
+#    slave should be assigned the same port number as master.
+#
+# 5) Port nuber of a coordinator slave must be the same as its master.
+#
+# 6) Master and slave are connected using synchronous replication.  Asynchronous replication
+#    have slight (almost none) chance to bring total cluster into inconsistent state.
+#    This chance is very low and may be negligible.  Support of asynchronous replication
+#    may be supported in the later release.
+#
+# 7) Each coordinator and datanode can have only one slave each.  Cascaded replication and
+#    multiple slave are not supported in the current pgxc_ctl.
+#
+# 8) Killing nodes may end up with IPC resource leak, such as semafor and shared memory.
+#    Only listening port (socket) will be cleaned with clean command.
+#
+# 9) Backup and restore are not supported in pgxc_ctl at present.   This is a big task and
+#    may need considerable resource.
+#
+#========================================================================================
+#
+#
+# pgxcInstallDir variable is needed if you invoke "deploy" command from pgxc_ctl utility.
+# If don't you don't need this variable.
+pgxcInstallDir=$PGHOME
+pgxlDATA=$PGHOME/data 
+#---- OVERALL -----------------------------------------------------------------------------
+#
+pgxcOwner=postgres          # owner of the Postgres-XC databaseo cluster.  Here, we use this
+                        # both as linus user and database user.  This must be
+                        # the super user of each coordinator and datanode.
+pgxcUser=$pgxcOwner        # OS user of Postgres-XC owner
+
+tmpDir=/tmp                 # temporary dir used in XC servers
+localTmpDir=$tmpDir            # temporary dir used here locally
+
+configBackup=n                  # If you want config file backup, specify y to this value.
+configBackupHost=pgxc-linker    # host to backup config file
+configBackupDir=$HOME/pgxc     # Backup directory
+configBackupFile=pgxc_ctl.bak   # Backup file name --> Need to synchronize when original changed.
+
+#---- GTM ------------------------------------------------------------------------------------
+
+# GTM is mandatory.  You must have at least (and only) one GTM master in your Postgres-XC cluster.
+# If GTM crashes and you need to reconfigure it, you can do it by pgxc_update_gtm command to update
+# GTM master with others.   Of course, we provide pgxc_remove_gtm command to remove it.  This command
+# will not stop the current GTM.  It is up to the operator.
+
+
+#---- GTM Master -----------------------------------------------
+
+#---- Overall ----
+gtmName=gtm
+gtmMasterServer=gtm
+gtmMasterPort=6666
+gtmMasterDir=$pgxlDATA/nodes/gtm
+
+#---- Configuration ---
+gtmExtraConfig=none         # Will be added gtm.conf for both Master and Slave (done at initilization only)
+gtmMasterSpecificExtraConfig=none   # Will be added to Master's gtm.conf (done at initialization only)
+
+#---- GTM Slave -----------------------------------------------
+
+# Because GTM is a key component to maintain database consistency, you may want to configure GTM slave
+# for backup.
+
+#---- Overall ------
+gtmSlave=y                  # Specify y if you configure GTM Slave.   Otherwise, GTM slave will not be configured and
+                            # all the following variables will be reset.
+gtmSlaveName=gtmSlave
+gtmSlaveServer=gtm      # value none means GTM slave is not available.  Give none if you don't configure GTM Slave.
+gtmSlavePort=20001          # Not used if you don't configure GTM slave.
+gtmSlaveDir=$pgxlDATA/nodes/gtmSlave   # Not used if you don't configure GTM slave.
+# Please note that when you have GTM failover, then there will be no slave available until you configure the slave
+# again. (pgxc_add_gtm_slave function will handle it)
+
+#---- Configuration ----
+gtmSlaveSpecificExtraConfig=none # Will be added to Slave's gtm.conf (done at initialization only)
+
+#---- GTM Proxy -------------------------------------------------------------------------------------------------------
+# GTM proxy will be selected based upon which server each component runs on.
+# When fails over to the slave, the slave inherits its master's gtm proxy.  It should be
+# reconfigured based upon the new location.
+#
+# To do so, slave should be restarted.   So pg_ctl promote -> (edit postgresql.conf and recovery.conf) -> pg_ctl restart
+#
+# You don't have to configure GTM Proxy if you dont' configure GTM slave or you are happy if every component connects
+# to GTM Master directly.  If you configure GTL slave, you must configure GTM proxy too.
+
+#---- Shortcuts ------
+gtmProxyDir=$pgxlDATA/nodes/gtm_pxy
+
+#---- Overall -------
+gtmProxy=y              # Specify y if you conifugre at least one GTM proxy.   You may not configure gtm proxies
+                        # only when you dont' configure GTM slaves.
+                        # If you specify this value not to y, the following parameters will be set to default empty values.
+                        # If we find there're no valid Proxy server names (means, every servers are specified
+                        # as none), then gtmProxy value will be set to "n" and all the entries will be set to
+                        # empty values.
+gtmProxyNames=(gtm_pxy1 gtm_pxy2)   # No used if it is not configured
+gtmProxyServers=(datanode1 datanode2)           # Specify none if you dont' configure it.
+gtmProxyPorts=(6666 6666)               # Not used if it is not configured.
+gtmProxyDirs=($gtmProxyDir $gtmProxyDir) # Not used if it is not configured.
+
+#---- Configuration ----
+gtmPxyExtraConfig=none      # Extra configuration parameter for gtm_proxy.  Coordinator section has an example.
+gtmPxySpecificExtraConfig=(none none none none)
+
+#---- Coordinators ----------------------------------------------------------------------------------------------------
+
+#---- shortcuts ----------
+coordMasterDir=$pgxlDATA/nodes/coord
+coordSlaveDir=$HOME/pgxc/nodes/coord_slave
+coordArchLogDir=$HOME/pgxc/nodes/coord_archlog
+
+#---- Overall ------------
+coordNames=(coord1 coord2)      # Master and slave use the same name
+coordPorts=(5432 5432)          # Master ports
+poolerPorts=(6667 6667)         # Master pooler ports
+coordPgHbaEntries=(0.0.0.0/0)               # Assumes that all the coordinator (master/slave) accepts
+                                                # the same connection
+                                                # This entry allows only $pgxcOwner to connect.
+                                                # If you'd like to setup another connection, you should
+                                                # supply these entries through files specified below.
+# Note: The above parameter is extracted as "host all all 0.0.0.0/0 trust".   If you don't want
+# such setups, specify the value () to this variable and suplly what you want using coordExtraPgHba
+# and/or coordSpecificExtraPgHba variables.
+#coordPgHbaEntries=(::1/128)    # Same as above but for IPv6 addresses
+
+#---- Master -------------
+coordMasterServers=(datanode1 datanode2)        # none means this master is not available
+coordMasterDirs=($coordMasterDir $coordMasterDir)
+coordMaxWALsernder=0    # max_wal_senders: needed to configure slave. If zero value is specified,
+                        # it is expected to supply this parameter explicitly by external files
+                        # specified in the following.   If you don't configure slaves, leave this value to zero.
+coordMaxWALSenders=($coordMaxWALsernder $coordMaxWALsernder)
+                        # max_wal_senders configuration for each coordinator.
+
+#---- Slave -------------
+coordSlave=n            # Specify y if you configure at least one coordiantor slave.  Otherwise, the following
+                        # configuration parameters will be set to empty values.
+                        # If no effective server names are found (that is, every servers are specified as none),
+                        # then coordSlave value will be set to n and all the following values will be set to
+                        # empty values.
+coordSlaveSync=y        # Specify to connect with synchronized mode.
+coordSlaveServers=(node07 node08 node09 node06)         # none means this slave is not available
+coordSlavePorts=(20004 20005 20004 20005)           # Master ports
+coordSlavePoolerPorts=(20010 20011 20010 20011)         # Master pooler ports
+coordSlaveDirs=($coordSlaveDir $coordSlaveDir $coordSlaveDir $coordSlaveDir)
+coordArchLogDirs=($coordArchLogDir $coordArchLogDir $coordArchLogDir $coordArchLogDir)
+
+#---- Configuration files---
+# Need these when you'd like setup specific non-default configuration 
+# These files will go to corresponding files for the master.
+# You may supply your bash script to setup extra config lines and extra pg_hba.conf entries 
+# Or you may supply these files manually.
+coordExtraConfig=coordExtraConfig   # Extra configuration file for coordinators.  
+                        # This file will be added to all the coordinators'
+                        # postgresql.conf
+# Pleae note that the following sets up minimum parameters which you may want to change.
+# You can put your postgresql.conf lines here.
+cat > $coordExtraConfig <<EOF
+#================================================
+# Added to all the coordinator postgresql.conf
+# Original: $coordExtraConfig
+log_destination = 'stderr'
+logging_collector = on
+log_directory = 'pg_log'
+listen_addresses = '*'
+max_connections = 100
+EOF
+
+# Additional Configuration file for specific coordinator master.
+# You can define each setting by similar means as above.
+coordSpecificExtraConfig=(none none none none)
+coordExtraPgHba=none    # Extra entry for pg_hba.conf.  This file will be added to all the coordinators' pg_hba.conf
+coordSpecificExtraPgHba=(none none none none)
+
+#----- Additional Slaves -----
+#
+# Please note that this section is just a suggestion how we extend the configuration for
+# multiple and cascaded replication.   They're not used in the current version.
+#
+coordAdditionalSlaves=n     # Additional slave can be specified as follows: where you
+coordAdditionalSlaveSet=(cad1)      # Each specifies set of slaves.   This case, two set of slaves are
+                                            # configured
+cad1_Sync=n             # All the slaves at "cad1" are connected with asynchronous mode.
+                            # If not, specify "y"
+                            # The following lines specifies detailed configuration for each
+                            # slave tag, cad1.  You can define cad2 similarly.
+cad1_Servers=(node08 node09 node06 node07)  # Hosts
+cad1_dir=$HOME/pgxc/nodes/coord_slave_cad1
+cad1_Dirs=($cad1_dir $cad1_dir $cad1_dir $cad1_dir)
+cad1_ArchLogDir=$HOME/pgxc/nodes/coord_archlog_cad1
+cad1_ArchLogDirs=($cad1_ArchLogDir $cad1_ArchLogDir $cad1_ArchLogDir $cad1_ArchLogDir)
+
+
+#---- Datanodes -------------------------------------------------------------------------------------------------------
+
+#---- Shortcuts --------------
+datanodeMasterDir=$pgxlDATA/nodes/dn_master
+datanodeSlaveDir=$HOME/pgxc/nodes/dn_slave
+datanodeArchLogDir=$HOME/pgxc/nodes/datanode_archlog
+
+#---- Overall ---------------
+#primaryDatanode=datanode1              # Primary Node.
+# At present, xc has a priblem to issue ALTER NODE against the primay node.  Until it is fixed, the test will be done
+# without this feature.
+primaryDatanode=node1               # Primary Node.
+datanodeNames=(node1 node2)
+datanodePorts=(5433 5433)   # Master ports
+datanodePoolerPorts=(6668 6668) # Master pooler ports
+datanodePgHbaEntries=(0.0.0.0/0)    # Assumes that all the coordinator (master/slave) accepts
+                                        # the same connection
+                                        # This list sets up pg_hba.conf for $pgxcOwner user.
+                                        # If you'd like to setup other entries, supply them
+                                        # through extra configuration files specified below.
+# Note: The above parameter is extracted as "host all all 0.0.0.0/0 trust".   If you don't want
+# such setups, specify the value () to this variable and suplly what you want using datanodeExtraPgHba
+# and/or datanodeSpecificExtraPgHba variables.
+#datanodePgHbaEntries=(::1/128) # Same as above but for IPv6 addresses
+
+#---- Master ----------------
+datanodeMasterServers=(datanode1 datanode2) # none means this master is not available.
+                                                    # This means that there should be the master but is down.
+                                                    # The cluster is not operational until the master is
+                                                    # recovered and ready to run.   
+datanodeMasterDirs=($datanodeMasterDir $datanodeMasterDir)
+datanodeMaxWalSender=4                              # max_wal_senders: needed to configure slave. If zero value is 
+                                                    # specified, it is expected this parameter is explicitly supplied
+                                                    # by external configuration files.
+                                                    # If you don't configure slaves, leave this value zero.
+datanodeMaxWALSenders=($datanodeMaxWalSender $datanodeMaxWalSender)
+                        # max_wal_senders configuration for each datanode
+
+#---- Slave -----------------
+datanodeSlave=n         # Specify y if you configure at least one coordiantor slave.  Otherwise, the following
+                        # configuration parameters will be set to empty values.
+                        # If no effective server names are found (that is, every servers are specified as none),
+                        # then datanodeSlave value will be set to n and all the following values will be set to
+                        # empty values.
+datanodeSlaveServers=(datanode2 datanode1)  # value none means this slave is not available
+datanodeSlavePorts=(15433 15433)    # value none means this slave is not available
+datanodeSlavePoolerPorts=(20012 20012)  # value none means this slave is not available
+datanodeSlaveSync=y     # If datanode slave is connected in synchronized mode
+datanodeSlaveDirs=($datanodeSlaveDir $datanodeSlaveDir)
+datanodeArchLogDirs=($datanodeArchLogDir $datanodeArchLogDir )
+
+# ---- Configuration files ---
+# You may supply your bash script to setup extra config lines and extra pg_hba.conf entries here.
+# These files will go to corresponding files for the master.
+# Or you may supply these files manually.
+datanodeExtraConfig=none    # Extra configuration file for datanodes.  This file will be added to all the 
+                            # datanodes' postgresql.conf
+datanodeSpecificExtraConfig=(none none none none)
+datanodeExtraPgHba=none     # Extra entry for pg_hba.conf.  This file will be added to all the datanodes' postgresql.conf
+datanodeSpecificExtraPgHba=(none none none none)
+
+#----- Additional Slaves -----
+datanodeAdditionalSlaves=n  # Additional slave can be specified as follows: where you
+# datanodeAdditionalSlaveSet=(dad1 dad2)        # Each specifies set of slaves.   This case, two set of slaves are
+                                            # configured
+# dad1_Sync=n               # All the slaves at "cad1" are connected with asynchronous mode.
+                            # If not, specify "y"
+                            # The following lines specifies detailed configuration for each
+                            # slave tag, cad1.  You can define cad2 similarly.
+# dad1_Servers=(node08 node09 node06 node07)    # Hosts
+# dad1_dir=$HOME/pgxc/nodes/coord_slave_cad1
+# dad1_Dirs=($cad1_dir $cad1_dir $cad1_dir $cad1_dir)
+# dad1_ArchLogDir=$HOME/pgxc/nodes/coord_archlog_cad1
+# dad1_ArchLogDirs=($cad1_ArchLogDir $cad1_ArchLogDir $cad1_ArchLogDir $cad1_ArchLogDir)
+
+#---- WAL archives -------------------------------------------------------------------------------------------------
+walArchive=n    # If you'd like to configure WAL archive, edit this section.
+                # Pgxc_ctl assumes that if you configure WAL archive, you configure it
+                # for all the coordinators and datanodes.
+                # Default is "no".   Please specify "y" here to turn it on.
+#
+#       End of Configuration Section
+#
+#==========================================================================================================================
+
+#========================================================================================================================
+# The following is for extension.  Just demonstrate how to write such extension.  There's no code
+# which takes care of them so please ignore the following lines.  They are simply ignored by pgxc_ctl.
+# No side effects.
+#=============<< Beginning of future extension demonistration >> ========================================================
+# You can setup more than one backup set for various purposes, such as disaster recovery.
+walArchiveSet=(war1 war2)
+war1_source=(master)    # you can specify master, slave or ano other additional slaves as a source of WAL archive.
+                    # Default is the master
+wal1_source=(slave)
+wal1_source=(additiona_coordinator_slave_set additional_datanode_slave_set)
+war1_host=node10    # All the nodes are backed up at the same host for a given archive set
+war1_backupdir=$HOME/pgxc/backup_war1
+wal2_source=(master)
+war2_host=node11
+war2_backupdir=$HOME/pgxc/backup_war2
+#=============<< End of future extension demonistration >> ========================================================
+将修改好的pgxc_ctl.conf文件传给2个node做个备份
+
+[postgres@localhost ~]$ scp /home/postgres/pgxc_ctl/pgxc_ctl.conf postgres@datanode1:/home/postgres/pgxc_ctl/pgxc_ctl.conf
+The authenticity of host 'datanode1 (192.168.230.144)' can't be established.
+ECDSA key fingerprint is d0:ab:13:fd:09:6b:45:55:0d:eb:67:c9:de:32:48:d2.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'datanode1' (ECDSA) to the list of known hosts.
+pgxc_ctl.conf                                                                                    100%   17KB  17.0KB/s   00:00
+
+[postgres@localhost ~]$ scp /home/postgres/pgxc_ctl/pgxc_ctl.conf postgres@datanode2:/home/postgres/pgxc_ctl/pgxc_ctl.conf
+The authenticity of host 'datanode2 (192.168.230.145)' can't be established.
+ECDSA key fingerprint is a4:f2:96:92:9a:e1:4e:cb:f0:9d:f2:ea:93:ec:44:23.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added 'datanode2' (ECDSA) to the list of known hosts.
+pgxc_ctl.conf                                                                                    100%   17KB  17.0KB/s   00:00
+初始化集群
+第一次启动集群时需要初始化
+
+[postgres@localhost ~]$ pgxc_ctl -c /home/postgres/pgxc_ctl/pgxc_ctl.conf init all
+/bin/bash
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Reading configuration using /home/postgres/pgxc_ctl/pgxc_ctl_bash --home /home/postgres/pgxc_ctl --configuration /home/postgres/pgxc_ctl/pgxc_ctl.conf
+Finished reading configuration.
+   ******** PGXC_CTL START ***************
+
+Current directory: /home/postgres/pgxc_ctl
+Initialize GTM master
+The authenticity of host 'gtm (192.168.230.143)' can't be established.
+ECDSA key fingerprint is cd:7e:a2:7d:9b:a9:13:10:96:e9:a4:1a:30:ab:ed:a6.
+Are you sure you want to continue connecting (yes/no)? yes
+mkdir: cannot create directory ‘/home/postgres/pgxl/data’: Permission denied
+The files belonging to this GTM system will be owned by user "postgres".
+This user must also own the server process.
+
+
+creating directory /home/postgres/pgxl/data/nodes/gtm ... initgtm: could not create directory "/home/postgres/pgxl/data": Permission denied
+bash: /home/postgres/pgxl/data/nodes/gtm/gtm.conf: No such file or directory
+gtm cannot access the server configuration file "/home/postgres/pgxl/data/nodes/gtm/gtm.conf": No such file or directory
+gtm_ctl: PID file "/home/postgres/pgxl/data/nodes/gtm/gtm.pid" does not exist
+Is server running?
+Done.
+Start GTM master
+server starting
+gtm cannot access the server configuration file "/home/postgres/pgxl/data/nodes/gtm/gtm.conf": No such file or directory
+Initialize GTM slave
+mkdir: cannot create directory ‘/home/postgres/pgxl/data’: Permission denied
+The files belonging to this GTM system will be owned by user "postgres".
+This user must also own the server process.
+
+
+creating directory /home/postgres/pgxl/data/nodes/gtmSlave ... initgtm: could not create directory "/home/postgres/pgxl/data": Permission denied
+bash: /home/postgres/pgxl/data/nodes/gtmSlave/gtm.conf: No such file or directory
+Done.
+Start GTM slaveserver starting
+gtm cannot access the server configuration file "/home/postgres/pgxl/data/nodes/gtmSlave/gtm.conf": No such file or directory
+Done.
+Initialize all the gtm proxies.
+Initializing gtm proxy gtm_pxy1.
+Initializing gtm proxy gtm_pxy2.
+mkdir: cannot create directory ‘/home/postgres/pgxl/data’: Permission denied
+The files belonging to this GTM system will be owned by user "postgres".
+This user must also own the server process.
+
+
+creating directory /home/postgres/pgxl/data/nodes/gtm_pxy ... initgtm: could not create directory "/home/postgres/pgxl/data": Permission denied
+bash: /home/postgres/pgxl/data/nodes/gtm_pxy/gtm_proxy.conf: No such file or directory
+mkdir: cannot create directory ‘/home/postgres/pgxl/data’: Permission denied
+The files belonging to this GTM system will be owned by user "postgres".
+This user must also own the server process.
+
+
+creating directory /home/postgres/pgxl/data/nodes/gtm_pxy ... initgtm: could not create directory "/home/postgres/pgxl/data": Permission denied
+bash: /home/postgres/pgxl/data/nodes/gtm_pxy/gtm_proxy.conf: No such file or directory
+Done.
+Starting all the gtm proxies.
+Starting gtm proxy gtm_pxy1.
+Starting gtm proxy gtm_pxy2.
+server starting
+gtm_proxy cannot access the server configuration file "/home/postgres/pgxl/data/nodes/gtm_pxy/gtm_proxy.conf": No such file or directory
+server starting
+gtm_proxy cannot access the server configuration file "/home/postgres/pgxl/data/nodes/gtm_pxy/gtm_proxy.conf": No such file or directory
+Done.
+Initialize all the coordinator masters.
+Initialize coordinator master coord1.
+Initialize coordinator master coord2.
+
+[postgres@gtm ~]$ pgxc_ctl -c /home/postgres/pgxc_ctl/pgxc_ctl.conf init all
+/bin/bash
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Reading configuration using /home/postgres/pgxc_ctl/pgxc_ctl_bash --home /home/postgres/pgxc_ctl --configuration /home/postgres/pgxc_ctl/pgxc_ctl.conf
+Finished reading configuration.
+   ******** PGXC_CTL START ***************
+
+Current directory: /home/postgres/pgxc_ctl
+Initialize GTM master
+ERROR: target directory (/home/postgres/pgxl/data/nodes/gtm) exists and not empty. Skip GTM initilialization
+1:4221830976:2017-10-26 02:15:06.915 PDT -FATAL:  lock file "gtm.pid" already exists
+2:4221830976:2017-10-26 02:15:06.915 PDT -HINT:  Is another GTM (PID 14702) running in data directory "/home/postgres/pgxl/data/nodes/gtm"?
+LOCATION:  CreateLockFile, main.c:2099
+waiting for server to shut down.... done
+server stopped
+Done.
+Start GTM master
+server starting
+Initialize GTM slave
+waiting for server to shut down.... done
+server stopped
+The files belonging to this GTM system will be owned by user "postgres".
+This user must also own the server process.
+
+
+fixing permissions on existing directory /home/postgres/pgxl/data/nodes/gtmSlave ... ok
+creating configuration files ... ok
+creating control file ... ok
+
+Success.
+Done.
+Start GTM slaveserver starting
+Done.
+Initialize all the gtm proxies.
+Initializing gtm proxy gtm_pxy1.
+Initializing gtm proxy gtm_pxy2.
+The files belonging to this GTM system will be owned by user "postgres".
+This user must also own the server process.
+
+
+fixing permissions on existing directory /home/postgres/pgxl/data/nodes/gtm_pxy ... ok
+creating configuration files ... ok
+
+Success.
+The files belonging to this GTM system will be owned by user "postgres".
+This user must also own the server process.
+
+
+fixing permissions on existing directory /home/postgres/pgxl/data/nodes/gtm_pxy ... ok
+creating configuration files ... ok
+
+Success.
+Done.
+Starting all the gtm proxies.
+Starting gtm proxy gtm_pxy1.
+Starting gtm proxy gtm_pxy2.
+server starting
+server starting
+Done.
+Initialize all the coordinator masters.
+Initialize coordinator master coord1.
+Initialize coordinator master coord2.
+The files belonging to this database system will be owned by user "postgres".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "en_US.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /home/postgres/pgxl/data/nodes/coord ... ok
+creating subdirectories ... ok
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting dynamic shared memory implementation ... posix
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... creating cluster information ... ok
+syncing data to disk ... ok
+freezing database template0 ... ok
+freezing database template1 ... ok
+freezing database postgres ... ok
+
+WARNING: enabling "trust" authentication for local connections
+You can change this by editing pg_hba.conf or using the option -A, or
+--auth-local and --auth-host, the next time you run initdb.
+
+Success.
+The files belonging to this database system will be owned by user "postgres".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "en_US.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /home/postgres/pgxl/data/nodes/coord ... ok
+creating subdirectories ... ok
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting dynamic shared memory implementation ... posix
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... creating cluster information ... ok
+syncing data to disk ... ok
+freezing database template0 ... ok
+freezing database template1 ... ok
+freezing database postgres ... ok
+
+WARNING: enabling "trust" authentication for local connections
+You can change this by editing pg_hba.conf or using the option -A, or
+--auth-local and --auth-host, the next time you run initdb.
+
+Success.
+Done.
+Starting coordinator master.
+Starting coordinator master coord1
+Starting coordinator master coord2
+2017-10-26 02:15:25.296 PDT [15951] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2017-10-26 02:15:25.296 PDT [15951] LOG:  listening on IPv6 address "::", port 5432
+2017-10-26 02:15:25.297 PDT [15951] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2017-10-26 02:15:25.304 PDT [15951] LOG:  redirecting log output to logging collector process
+2017-10-26 02:15:25.304 PDT [15951] HINT:  Future log output will appear in directory "pg_log".
+2017-10-26 02:15:25.321 PDT [15847] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2017-10-26 02:15:25.321 PDT [15847] LOG:  listening on IPv6 address "::", port 5432
+2017-10-26 02:15:25.323 PDT [15847] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2017-10-26 02:15:25.330 PDT [15847] LOG:  redirecting log output to logging collector process
+2017-10-26 02:15:25.330 PDT [15847] HINT:  Future log output will appear in directory "pg_log".
+Done.
+Initialize all the datanode masters.
+Initialize the datanode master node1.
+Initialize the datanode master node2.
+The files belonging to this database system will be owned by user "postgres".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "en_US.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /home/postgres/pgxl/data/nodes/dn_master ... ok
+creating subdirectories ... ok
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting dynamic shared memory implementation ... posix
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... creating cluster information ... ok
+syncing data to disk ... ok
+freezing database template0 ... ok
+freezing database template1 ... ok
+freezing database postgres ... ok
+
+WARNING: enabling "trust" authentication for local connections
+You can change this by editing pg_hba.conf or using the option -A, or
+--auth-local and --auth-host, the next time you run initdb.
+
+Success.
+The files belonging to this database system will be owned by user "postgres".
+This user must also own the server process.
+
+The database cluster will be initialized with locale "en_US.UTF-8".
+The default database encoding has accordingly been set to "UTF8".
+The default text search configuration will be set to "english".
+
+Data page checksums are disabled.
+
+fixing permissions on existing directory /home/postgres/pgxl/data/nodes/dn_master ... ok
+creating subdirectories ... ok
+selecting default max_connections ... 100
+selecting default shared_buffers ... 128MB
+selecting dynamic shared memory implementation ... posix
+creating configuration files ... ok
+running bootstrap script ... ok
+performing post-bootstrap initialization ... creating cluster information ... ok
+syncing data to disk ... ok
+freezing database template0 ... ok
+freezing database template1 ... ok
+freezing database postgres ... ok
+
+WARNING: enabling "trust" authentication for local connections
+You can change this by editing pg_hba.conf or using the option -A, or
+--auth-local and --auth-host, the next time you run initdb.
+
+Success.
+Done.
+Starting all the datanode masters.
+Starting datanode master node1.
+Starting datanode master node2.
+2017-10-26 02:15:32.075 PDT [16427] LOG:  listening on IPv4 address "0.0.0.0", port 5433
+2017-10-26 02:15:32.075 PDT [16427] LOG:  listening on IPv6 address "::", port 5433
+2017-10-26 02:15:32.077 PDT [16427] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5433"
+2017-10-26 02:15:32.083 PDT [16427] LOG:  redirecting log output to logging collector process
+2017-10-26 02:15:32.083 PDT [16427] HINT:  Future log output will appear in directory "pg_log".
+2017-10-26 02:15:32.109 PDT [16323] LOG:  listening on IPv4 address "0.0.0.0", port 5433
+2017-10-26 02:15:32.109 PDT [16323] LOG:  listening on IPv6 address "::", port 5433
+2017-10-26 02:15:32.111 PDT [16323] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5433"
+2017-10-26 02:15:32.116 PDT [16323] LOG:  redirecting log output to logging collector process
+2017-10-26 02:15:32.116 PDT [16323] HINT:  Future log output will appear in directory "pg_log".
+Done.
+ALTER NODE coord1 WITH (HOST='datanode1', PORT=5432);
+ALTER NODE
+CREATE NODE coord2 WITH (TYPE='coordinator', HOST='datanode2', PORT=5432);
+CREATE NODE
+CREATE NODE node1 WITH (TYPE='datanode', HOST='datanode1', PORT=5433, PRIMARY, PREFERRED);
+CREATE NODE
+CREATE NODE node2 WITH (TYPE='datanode', HOST='datanode2', PORT=5433);
+CREATE NODE
+SELECT pgxc_pool_reload();
+ pgxc_pool_reload 
+------------------
+ t
+(1 row)
+
+CREATE NODE coord1 WITH (TYPE='coordinator', HOST='datanode1', PORT=5432);
+CREATE NODE
+ALTER NODE coord2 WITH (HOST='datanode2', PORT=5432);
+ALTER NODE
+CREATE NODE node1 WITH (TYPE='datanode', HOST='datanode1', PORT=5433, PRIMARY);
+CREATE NODE
+CREATE NODE node2 WITH (TYPE='datanode', HOST='datanode2', PORT=5433, PREFERRED);
+CREATE NODE
+SELECT pgxc_pool_reload();
+ pgxc_pool_reload 
+------------------
+ t
+(1 row)
+
+Done.
+EXECUTE DIRECT ON (node1) 'CREATE NODE coord1 WITH (TYPE=''coordinator'', HOST=''datanode1'', PORT=5432)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node1) 'CREATE NODE coord2 WITH (TYPE=''coordinator'', HOST=''datanode2'', PORT=5432)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node1) 'ALTER NODE node1 WITH (TYPE=''datanode'', HOST=''datanode1'', PORT=5433, PRIMARY, PREFERRED)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node1) 'CREATE NODE node2 WITH (TYPE=''datanode'', HOST=''datanode2'', PORT=5433, PREFERRED)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node1) 'SELECT pgxc_pool_reload()';
+ pgxc_pool_reload 
+------------------
+ t
+(1 row)
+
+EXECUTE DIRECT ON (node2) 'CREATE NODE coord1 WITH (TYPE=''coordinator'', HOST=''datanode1'', PORT=5432)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node2) 'CREATE NODE coord2 WITH (TYPE=''coordinator'', HOST=''datanode2'', PORT=5432)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node2) 'CREATE NODE node1 WITH (TYPE=''datanode'', HOST=''datanode1'', PORT=5433, PRIMARY, PREFERRED)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node2) 'ALTER NODE node2 WITH (TYPE=''datanode'', HOST=''datanode2'', PORT=5433, PREFERRED)';
+EXECUTE DIRECT
+EXECUTE DIRECT ON (node2) 'SELECT pgxc_pool_reload()';
+ pgxc_pool_reload 
+------------------
+ t
+(1 row)
+
+Done.
+集群验证
+在datanode1节点上 
+连接上5432端口，即node1上的coordinator，查看集群节点状态
+
+[postgres@datanode1 ~]$ psql -p 5432
+psql (PGXL 10alpha2, based on PG 10beta3 (Postgres-XL 10alpha2))
+Type "help" for help.
+
+postgres=# select * from pgxc_node;
+ node_name | node_type | node_port | node_host | nodeis_primary | nodeis_preferred |   node_id   
+-----------+-----------+-----------+-----------+----------------+------------------+-------------
+ coord1    | C         |      5432 | datanode1 | f              | f                |  1885696643
+ coord2    | C         |      5432 | datanode2 | f              | f                | -1197102633
+ node1     | D         |      5433 | datanode1 | t              | t                |  1148549230
+ node2     | D         |      5433 | datanode2 | f              | f                |  -927910690
+(4 rows)
+如上面所示，可看到2个coordinator，2个node。集群状态正常 
+尝试创建测试表test1，并插入数据
+
+postgres=# create table test1(id int,name text);
+CREATE TABLE
+postgres=# insert into test1(id,name) select generate_series(1,8),'test';
+INSERT 0 8
+postgres=# select * from test1;
+ id | name 
+----+------
+  1 | test
+  2 | test
+  5 | test
+  6 | test
+  8 | test
+  3 | test
+  4 | test
+  7 | test
+(8 rows)
+
+postgres=# exit
+postgres-# \q
+连接到datanode1服务器的5433端口，即node1，查看测试表的数据
+
+[postgres@datanode1 ~]$ psql -p 5433
+psql (PGXL 10alpha2, based on PG 10beta3 (Postgres-XL 10alpha2))
+Type "help" for help.
+
+postgres=# select * from test1;
+ id | name 
+----+------
+  1 | test
+  2 | test
+  5 | test
+  6 | test
+  8 | test
+(5 rows)
+可看到表中数据是不全的 
+再去datanode2服务器查看 
+先连接到5432端口，即coordinator
+
+[postgres@datanode2 ~]$ psql -p 5432
+psql (PGXL 10alpha2, based on PG 10beta3 (Postgres-XL 10alpha2))
+Type "help" for help.
+
+postgres=# select * from test1;
+ id | name 
+----+------
+  1 | test
+  2 | test
+  5 | test
+  6 | test
+  8 | test
+  3 | test
+  4 | test
+  7 | test
+(8 rows)
+
+postgres=# \q
+再切换到5433端口，即node2
+
+[postgres@datanode2 ~]$ psql -p 5433
+psql (PGXL 10alpha2, based on PG 10beta3 (Postgres-XL 10alpha2))
+Type "help" for help.
+
+postgres=# select * from test1;
+ id | name 
+----+------
+  3 | test
+  4 | test
+  7 | test
+(3 rows)
+正好是node1中缺少的那部分数据 
+证实分布式数据库集群搭建完成
+
+数据库集群日常操作
+关闭集群
+在gtm服务器上执行
+
+[postgres@gtm ~]$ pgxc_ctl -c /home/postgres/pgxc_ctl/pgxc_ctl.conf stop all 
+/bin/bash
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Reading configuration using /home/postgres/pgxc_ctl/pgxc_ctl_bash --home /home/postgres/pgxc_ctl --configuration /home/postgres/pgxc_ctl/pgxc_ctl.conf
+Finished reading configuration.
+   ******** PGXC_CTL START ***************
+
+Current directory: /home/postgres/pgxc_ctl
+Stopping all the coordinator masters.
+Stopping coordinator master coord1.
+Stopping coordinator master coord2.
+Done.
+Stopping all the datanode masters.
+Stopping datanode master node1.
+Stopping datanode master node2.
+Done.
+Stopping all the gtm proxies.
+Stopping gtm proxy gtm_pxy1.
+Stopping gtm proxy gtm_pxy2.
+waiting for server to shut down.... done
+server stopped
+waiting for server to shut down.... done
+server stopped
+Done.
+Stop GTM slave
+waiting for server to shut down.... done
+server stopped
+Stop GTM master
+waiting for server to shut down.... done
+server stopped
+开启集群
+在gtm服务器上执行
+
+[postgres@gtm ~]$ pgxc_ctl -c /home/postgres/pgxc_ctl/pgxc_ctl.conf start all 
+/bin/bash
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Installing pgxc_ctl_bash script as /home/postgres/pgxc_ctl/pgxc_ctl_bash.
+Reading configuration using /home/postgres/pgxc_ctl/pgxc_ctl_bash --home /home/postgres/pgxc_ctl --configuration /home/postgres/pgxc_ctl/pgxc_ctl.conf
+Finished reading configuration.
+   ******** PGXC_CTL START ***************
+
+Current directory: /home/postgres/pgxc_ctl
+Start GTM master
+server starting
+Start GTM slaveserver starting
+Done.
+Starting all the gtm proxies.
+Starting gtm proxy gtm_pxy1.
+Starting gtm proxy gtm_pxy2.
+server starting
+server starting
+Done.
+Starting coordinator master.
+Starting coordinator master coord1
+Starting coordinator master coord2
+2017-10-26 20:21:35.537 PDT [22477] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2017-10-26 20:21:35.538 PDT [22477] LOG:  listening on IPv6 address "::", port 5432
+2017-10-26 20:21:35.539 PDT [22477] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2017-10-26 20:21:35.556 PDT [22477] LOG:  redirecting log output to logging collector process
+2017-10-26 20:21:35.556 PDT [22477] HINT:  Future log output will appear in directory "pg_log".
+2017-10-26 20:21:35.563 PDT [22504] LOG:  listening on IPv4 address "0.0.0.0", port 5432
+2017-10-26 20:21:35.563 PDT [22504] LOG:  listening on IPv6 address "::", port 5432
+2017-10-26 20:21:35.565 PDT [22504] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5432"
+2017-10-26 20:21:35.583 PDT [22504] LOG:  redirecting log output to logging collector process
+2017-10-26 20:21:35.583 PDT [22504] HINT:  Future log output will appear in directory "pg_log".
+Done.
+Starting all the datanode masters.
+Starting datanode master node1.
+Starting datanode master node2.
+2017-10-26 20:21:36.360 PDT [22590] LOG:  listening on IPv4 address "0.0.0.0", port 5433
+2017-10-26 20:21:36.360 PDT [22590] LOG:  listening on IPv6 address "::", port 5433
+2017-10-26 20:21:36.362 PDT [22590] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5433"
+2017-10-26 20:21:36.382 PDT [22590] LOG:  redirecting log output to logging collector process
+2017-10-26 20:21:36.382 PDT [22590] HINT:  Future log output will appear in directory "pg_log".
+2017-10-26 20:21:36.374 PDT [22617] LOG:  listening on IPv4 address "0.0.0.0", port 5433
+2017-10-26 20:21:36.374 PDT [22617] LOG:  listening on IPv6 address "::", port 5433
+2017-10-26 20:21:36.375 PDT [22617] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5433"
+2017-10-26 20:21:36.395 PDT [22617] LOG:  redirecting log output to logging collector process
+2017-10-26 20:21:36.395 PDT [22617] HINT:  Future log output will appear in directory "pg_log".
+Done.

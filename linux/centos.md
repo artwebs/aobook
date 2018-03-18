@@ -68,13 +68,11 @@ semanage port -a -t ssh_port_t -p tcp 9481
 cd /data
 git clone https://github.com/happyfish100/libfastcommon.git
 git clone https://github.com/happyfish100/fastdfs.git
-yum install gcc git-core
+yum install gcc git-core net-tools
 cd libfastcommon/
-./make.sh
-./make.sh install
+./make.sh && ./make.sh install
 cd ../fastdfs
-./make.sh
-./make.sh install
+./make.sh && ./make.sh install
 mkdir -p /data/fdfs_tracker
 mkdir -p /data/fdfs_storage
 
