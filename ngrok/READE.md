@@ -1,0 +1,1 @@
+./ngrokd -tlsKey="demo.liuhb.cn.key" -tlsCrt="demo.liuhb.cn.crt" -domain="demo.liuhb.cn"  -httpAddr=":80" -httpsAddr=":443" -tunnelAddr=":4443"
